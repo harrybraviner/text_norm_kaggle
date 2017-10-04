@@ -51,6 +51,7 @@ class TrainingDataset:
         misc_chars = [' ', '\'']
         vanilla_chars = lc_chars + uc_chars + num_chars + misc_chars
         non_vanilla_chars = [c for c in self._char_counts if c not in vanilla_chars and self._char_counts[c] >= 10]
+        non_vanilla_chars.sort()
         ix_cursor = 0
         for c in vanilla_chars + non_vanilla_chars:
             self._c_to_ix[c] = ix_cursor
