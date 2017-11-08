@@ -61,9 +61,17 @@ class TrainingDataset:
         for c in self._char_counts:
             if self._char_counts[c] < 10:
                 self._c_to_ix[c] = self._rare_ix
-        self._vanilla_chars = set(vanilla_chars)    # Used for fast testing
+        self._vanilla_chars = set(vanilla_chars)    # Used for fast testing of whether a char is vanilla
         self._max_nv_chars = 10
         self._stop_ix = len(vanilla_chars) + self._max_nv_chars  # Used in the output to denote the end of the string
+
+    @property
+    def num_input_chars(self):
+        return self._rare_ix
+    
+    @property
+    def max_nv_chars(self):
+        return self._max_nv_chars
 
     def convert_input_output_pair(self, input_string, output_string):
 
