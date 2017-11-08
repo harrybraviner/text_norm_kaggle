@@ -19,13 +19,16 @@ def split_line(l):
 
 class TrainingDataset:
 
-    def __init__(self, location = 'data/en_train.csv', train_fraction = 0.7):
+    def __init__(self, location = 'data/en_train.csv', train_fraction = 0.7, line_limit = None):
 
-        f = open(location, 'rt')
-        f.readline()    # Throw away the header line
-
-        self._all_data = [split_line(l)[3:5] for l in f]
-        f.close()
+        with open(location, 'rt') as f:
+            f.readline()    # Throw away the header line
+            if line_limit is None:
+                self._all_data = [split_line(l)[3:5] for l in f]
+            else:
+                # Used if we want to run with only a small amount of data to check the code works
+                lines = [next(f) for _ in range(line_limit)]
+                self._all_data = [split_line(l)[3:5] for l in lines]
 
         self._N_total = len(self._all_data)
         self._N_train = int(train_fraction * self._N_total)
