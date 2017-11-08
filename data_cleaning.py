@@ -70,11 +70,17 @@ class TrainingDataset:
 
     @property
     def num_input_chars(self):
+        # Number of vanilla characters + 2 (<RARE> and <STOP>)
         return self._rare_ix
     
     @property
     def max_nv_chars(self):
         return self._max_nv_chars
+
+    @property
+    def num_output_chars(self):
+        # The -1 is because we cannot output a <RARE> token
+        return self.num_input_chars - 1 + self.max_nv_chars
 
     def convert_input_output_pair(self, input_string, output_string):
 
