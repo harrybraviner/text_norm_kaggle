@@ -25,3 +25,20 @@ Processing an input will take place as follows:
 * Convert each character to its embedded representation.
 * Pass the embeddings, and the one-hot encodings of the 0-9 indices, to the network.
 * For the output, one-hot encode the characters appropriately.
+
+# Network architecture
+
+The network itself will be a LSTM neural net.
+Parameters are:
+* `embedding_size` - dimension of the dense embedding of characters
+* `layer_width_1` - number of hidden neurons in the first layer
+* `layer_width_2` - ditto for seocnd layer
+
+The input will be the dense embedded encoding of the character (or the embedding of `<RARE>` if the character is not common in the input dataset) concatenated with the one-hot encoding of the non-vanilla index.
+
+# Todo
+
+* Validation / accuracy output (need to recover chars from one-hot encoding).
+* Neural network itself.
+* Loading the test set? Should be made part of the TrainingDataset object (since it wants access to
+  the indices of the non-vanilla characters)?
