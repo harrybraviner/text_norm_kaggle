@@ -53,24 +53,31 @@ class TrainingDataset:
         num_chars = [chr(i) for i in range(ord('0'), ord('9')+1)]
         misc_chars = [' ', '\'']
         vanilla_chars = lc_chars + uc_chars + num_chars + misc_chars
+        self._vanilla_chars = set(vanilla_chars)    # Used for fast testing of whether a char is vanilla
+        self._num_vanilla_chars = len(vanilla_chars)
+
         non_vanilla_chars = [c for c in self._char_counts if c not in vanilla_chars and self._char_counts[c] >= 10]
         non_vanilla_chars.sort()
+
         ix_cursor = 0
         for c in vanilla_chars + non_vanilla_chars:
             self._c_to_ix[c] = ix_cursor
             self._ix_to_c[ix_cursor] = c
             ix_cursor += 1
         self._rare_ix = ix_cursor
+        self._stop_ix = self._rare_ix + 1
+
+        # For characters that appear rarely in the training data, just assign them to the <RARE> token
         for c in self._char_counts:
             if self._char_counts[c] < 10:
                 self._c_to_ix[c] = self._rare_ix
-        self._vanilla_chars = set(vanilla_chars)    # Used for fast testing of whether a char is vanilla
-        self._max_nv_chars = 10
-        self._stop_ix = len(vanilla_chars) + self._max_nv_chars  # Used in the output to denote the end of the string
+
+        self._max_nv_chars = 10 # Used to set the width of the one-hot coding for nv-chars
+                                # This is the maximum number of distinct non-vanilla chars we can support in a single input
 
     @property
     def num_input_chars(self):
-        # Number of vanilla characters + 2 (<RARE> and <STOP>)
+        # Number of vanilla characters + non-vanilla input characters + 2 (<RARE> and <STOP>)
         return self._rare_ix
     
     @property
@@ -78,9 +85,25 @@ class TrainingDataset:
         return self._max_nv_chars
 
     @property
+    def rare_token_ix(self):
+        return self._rare_ix
+
+    @property
+    def stop_input_token_ix(self):
+        return self._stop_ix
+
+    @property
     def num_output_chars(self):
-        # The -1 is because we cannot output a <RARE> token
-        return self.num_input_chars - 1 + self.max_nv_chars
+        # The +1 is for the <STOP> token
+        return self._num_vanilla_chars + self.max_nv_chars + 1
+
+    @property
+    def stop_output_token_ix(self):
+        return self._num_vanilla_chars + self._max_nv_chars
+
+    @property
+    def start_output_token_ix(self):
+        return self.stop_output_token_ix + 1
 
     def convert_input_output_pair(self, input_string, output_string):
 
