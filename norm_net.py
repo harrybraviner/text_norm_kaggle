@@ -55,6 +55,9 @@ def main():
         rnn_output_cell_2 = tf.contrib.rnn.BasicLSTMCell(layer_width_2)
         rnn_output_multi_cell = tf.contrib.rnn.MultiRNNCell([rnn_output_cell_1, rnn_output_cell_2])
 
+        output_layer_w = tf.Variable(tf.truncated_normal([layer_width_2, train.num_output_chars], mean = 0.1, stddev = 0.02))
+        output_layer_b = tf.Variable(tf.zeros([train.num_output_chars]))
+
         start_token_oh = tf.one_hot([train.start_output_token_ix], depth = train.start_output_token_ix + 1)
         start_token_oh = tf.reshape(start_token_oh, shape=[-1, -1, train.start_output_token_ix + 1])
         # Take the output characters, ditch the <STOP> token, and append a 0 in the <START> token slot
@@ -62,12 +65,25 @@ def main():
         # Put the <START> token at the beginning
         rnn_output_input = tf.concat([start_token_oh, input_characters], axis = 1)
 
-        output_y_hat_logits, _ = tf.nn.dynamic_rnn(cell   = rnn_output_multi_cell,
+        layer_2_outputs, _ = tf.nn.dynamic_rnn(cell   = rnn_output_multi_cell,
                                                    inputs = rnn_output_input,
                                                    initial_state = final_state,
                                                    sequence_length = output_length,
                                                    dtype = tf.float32)
 
+        output_y_hat_logits = tf.tensordot(layer_2_outputs, output_layer_w, 1) + output_layer_b
+
+    # Loss measurement
+    # We have examples of different sizes in the batch.
+    # We want to equally weight examples, rather than equally weighting characters of output.
+    flattened_y = tf.reshape(output_y, [-1, train.num_output_chars])
+    flattened_y_hat_logits = tf.reshape(output_y_hat_logits, [-1, train.num_output_chars])
+    y_hat_weights = tf.reshape(tf.cast(output_length, dtype=tf.float32) * tf.reduce_max(output_y, axis=2), [-1])
+
+
+    cross_entropy_loss = tf.losses.softmax_cross_entropy(onehot_labels = flattened_y,
+                                                         logits = flattened_y_hat_logits,
+                                                         weights = y_hat_weights)
     
 
     raise NotImplementedError

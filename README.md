@@ -50,6 +50,7 @@ I'm not currently sure how to do this.
 # Todo
 
 * Validation / accuracy output (need to recover chars from one-hot encoding).
-* Neural network itself.
 * Loading the test set? Should be made part of the TrainingDataset object (since it wants access to
   the indices of the non-vanilla characters)?
+* Training.
+* Generation of output.
