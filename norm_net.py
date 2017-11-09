@@ -2,11 +2,11 @@
 
 import numpy as np
 import tensorflow as tf
-import data_cleaning
+import dataset
 
 def main():
 
-    train = data_cleaning.TrainingDataset(line_limit = 1000)
+    train = dataset.TrainingDataset(line_limit = 1000)
 
     # Set up the RNN
     # Parameters
@@ -85,6 +85,11 @@ def main():
                                                          logits = flattened_y_hat_logits,
                                                          weights = y_hat_weights)
     
+    optimizer = tf.train.AdamOptimizer(1e-4).minimize(cross_entropy_loss)
+
+    def train_one_batch():
+
+        return 0
 
     raise NotImplementedError
 
