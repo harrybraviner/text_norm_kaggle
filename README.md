@@ -28,24 +28,16 @@ Processing an input will take place as follows:
 
 # Network architecture
 
-The network itself will be a LSTM neural net.
+The network itself will be two LSTM neural nets:
+The *encoder* takes the input string (suitably encoded). The outputs of the net are ignored, we are only interested in its final state.
+The final state of the encoder is fed to the *decoder*, a second LSTM net. The input of each step of the decoder is the output character of the previous step.
+The decoder is trained to produce the output string.
 Parameters are:
 * `embedding_size` - dimension of the dense embedding of characters
 * `layer_width_1` - number of hidden neurons in the first layer
 * `layer_width_2` - ditto for seocnd layer
 
 The input will be the dense embedded encoding of the character (or the embedding of `<RARE>` if the character is not common in the input dataset) concatenated with the one-hot encoding of the non-vanilla index.
-
-## Batch Size
-
-Currently I'm using a batch size of 1.
-The reason for this is that the input sequence is a different length for each training example.
-What I would need to do for larger batches is more complicated than simply 'padding' the beginning of the input.
-Suppose I have an input sequence of size 10 and another of size 5. I pad the second to length 10.
-I have some trainable 'initial state' for my RNN.
-This initial state needs to be set as the input to the first cell for the first input sequence.
-But it needs to be set as the input to *fifth* cell for the second, padded, sequence.
-I'm not currently sure how to do this.
 
 # Todo
 
