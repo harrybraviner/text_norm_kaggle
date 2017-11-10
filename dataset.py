@@ -34,6 +34,10 @@ class TrainingDataset:
                 lines = [next(f) for _ in range(line_limit)]
                 self._all_data = [split_line(l)[3:5] for l in lines]
 
+        # Filter to input and output sizes
+        self._all_data = [(i, o) for (i, o) in self._all_data if     (max_input_size  is None or len(i) <= max_input_size )
+                                                                 and (max_output_size is None or len(o) <= max_output_size) ]
+
         self._N_total = len(self._all_data)
         self._N_train = int(train_fraction * self._N_total)
         self._N_val = self._N_total - self._N_train
@@ -157,29 +161,19 @@ class TrainingDataset:
 
         return input_ix, input_one_hot, label_one_hot, len(input_string), len(output_string)
 
-    def next_training_example(self, max_input_size = None, max_output_size = None):
+    def next_training_example(self):
 
-        suitable = False
-        while not suitable:
-            input_string, output_string = self._all_data[self._training_cursor]
-            suitable = True
-            if max_input_size  is not None and len(input_string)  > max_input_size:
-                suitable = False
-            if max_output_size is not None and len(output_string) > max_output_size:
-                suitable = False
+        input_string, output_string = self._all_data[self._training_cursor]
 
         self._training_cursor = (self._training_cursor + 1) % self._N_train
 
-        return self.convert_input_output_pair(input_string, output_string,
-                                              input_pad_length = max_input_size, output_pad_length = max_output_size)
+        return self.convert_input_output_pair(input_string, output_string)
 
     def next_batch(self, batch_size):
 
         # FIXME - need to also pass the actual lengths of the examples
 
-        input_output_data = [self.next_training_example(max_input_size = self._max_input_size,
-                                                        max_output_size = self._max_output_size)
-                             for _ in range(batch_size)]
+        input_output_data = [self.next_training_example() for _ in range(batch_size)]
 
         input_ix = np.stack([x[0] for x in input_output_data])
         input_oh = np.stack([x[1] for x in input_output_data])
@@ -194,9 +188,9 @@ class TrainingDataset:
 class TestsForTrainingDataset(unittest.TestCase):
 
     def test_construction_and_draw_example(self):
-        train = TrainingDataset()
+        train = TrainingDataset(line_limit = 1000)
 
-        input_ix, input_oh, label_oh = train.next_training_example()
-        input_ix, input_oh, label_oh = train.next_training_example()
-        input_ix, input_oh, label_oh = train.next_training_example()
-        input_ix, input_oh, label_oh = train.next_training_example()
+        _, _, _, _, _ = train.next_training_example()
+        _, _, _, _, _ = train.next_training_example()
+        _, _, _, _, _ = train.next_training_example()
+        _, _, _, _, _ = train.next_training_example()
