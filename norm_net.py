@@ -6,7 +6,7 @@ import dataset
 
 def main():
 
-    train = dataset.TrainingDataset(line_limit = 1000)
+    train = dataset.TrainingDataset(line_limit = 1000, max_input_size = 20, max_output_size = 30)
 
     # Set up the RNN
     # Parameters
@@ -28,12 +28,12 @@ def main():
         input_length = tf.placeholder(tf.int32, [None])
 
         # Index of character (or <STOP> or <RARE> tokens)
-        input_ix = tf.placeholder(tf.int32, [None, max_input_length])
+        input_ix = tf.placeholder(tf.int32, [None, max_input_length], name = 'input_ix')
         embedding_matrix = tf.Variable(tf.truncated_normal([train.num_input_chars, embedding_size], mean = 0.1, stddev = 0.02))
         
         input_dense = tf.nn.embedding_lookup(embedding_matrix, input_ix) # Dense encoding of the characters
         # One-hot encoding of the character if it's a 'non-vanilla' char
-        input_oh = tf.placeholder(tf.float32, [None, max_input_length, train.max_nv_chars])
+        input_oh = tf.placeholder(tf.float32, [None, max_input_length, train.max_nv_chars], name = 'input_oh')
 
         input_x = tf.concat([input_dense, input_oh], axis = 2)
 
@@ -49,7 +49,8 @@ def main():
 
         ## Setup tensors for the output sequence
         output_length = tf.placeholder(tf.int32, [None])
-        output_y = tf.placeholder(tf.float32, [None, max_output_length, train.num_output_chars])  # Correct output sequence, with <STOP> token
+        output_y = tf.placeholder(tf.float32, [None, max_output_length, train.num_output_chars],
+                                  name = 'output_y')  # Correct output sequence, with <STOP> token
 
         rnn_output_cell_1 = tf.contrib.rnn.BasicLSTMCell(layer_width_1)
         rnn_output_cell_2 = tf.contrib.rnn.BasicLSTMCell(layer_width_2)
@@ -58,8 +59,10 @@ def main():
         output_layer_w = tf.Variable(tf.truncated_normal([layer_width_2, train.num_output_chars], mean = 0.1, stddev = 0.02))
         output_layer_b = tf.Variable(tf.zeros([train.num_output_chars]))
 
-        start_token_oh = tf.one_hot([train.start_output_token_ix], depth = train.start_output_token_ix + 1)
-        start_token_oh = tf.reshape(start_token_oh, shape=[-1, -1, train.start_output_token_ix + 1])
+        batch_size = tf.shape(output_y)[0]
+        start_token_oh = tf.reshape(tf.one_hot([train.start_output_token_ix], depth = train.start_output_token_ix + 1), [1, 1, -1])
+        start_token_oh = tf.tile(start_token_oh, [batch_size, 1, 1])
+        #start_token_oh = tf.stack([start_token_oh for _ in range()])
         # Take the output characters, ditch the <STOP> token, and append a 0 in the <START> token slot
         input_characters = tf.concat([output_y[:, :-1, :], tf.zeros_like(output_y[:, :-1, 0:1], dtype = tf.float32)], axis = 2)
         # Put the <START> token at the beginning
@@ -87,11 +90,24 @@ def main():
     
     optimizer = tf.train.AdamOptimizer(1e-4).minimize(cross_entropy_loss)
 
+    # Actually setup tensorflow
+    sess = tf.Session()
+    sess.run(tf.global_variables_initializer())
+
     def train_one_batch():
 
-        return 0
+        input_ix_batch, input_oh_batch, output_y_batch, input_length_batch, output_length_batch = train.next_batch(1)
 
-    raise NotImplementedError
+        optimizer.run(feed_dict = {input_ix : input_ix_batch,
+                                   input_oh : input_oh_batch,
+                                   output_y : output_y_batch,
+                                   input_length : input_length_batch,
+                                   output_length : output_length_batch},
+                      session = sess)
+
+    for i in range(5):
+        print("i: {}".format(i))
+        train_one_batch()
 
 if __name__ == '__main__':
     main()

@@ -19,7 +19,11 @@ def split_line(l):
 
 class TrainingDataset:
 
-    def __init__(self, location = 'data/en_train.csv', train_fraction = 0.7, line_limit = None):
+    def __init__(self, location = 'data/en_train.csv', train_fraction = 0.7, line_limit = None,
+                 max_input_size = None, max_output_size = None):
+
+        self._max_output_size = max_output_size
+        self._max_input_size  = max_input_size
 
         with open(location, 'rt') as f:
             f.readline()    # Throw away the header line
@@ -78,7 +82,7 @@ class TrainingDataset:
     @property
     def num_input_chars(self):
         # Number of vanilla characters + non-vanilla input characters + 2 (<RARE> and <STOP>)
-        return self._rare_ix
+        return self._stop_ix + 1
     
     @property
     def max_nv_chars(self):
@@ -105,7 +109,13 @@ class TrainingDataset:
     def start_output_token_ix(self):
         return self.stop_output_token_ix + 1
 
-    def convert_input_output_pair(self, input_string, output_string):
+    def convert_input_output_pair(self, input_string, output_string, input_pad_length = None, output_pad_length = None):
+
+        if input_pad_length is not None and len(input_string) > input_pad_length:
+            raise ValueError("input_string length {} is greater than input_pad_length {}".format(len(input_string), input_pad_length))
+
+        if output_pad_length is not None and len(output_string) > output_pad_length:
+            raise ValueError("output_string length {} is greater than output_pad_length {}".format(len(output_string), output_pad_length))
 
         # Flag which characters are non-vanilla and assign them indices
         nv_characters = set([c for c in input_string if c not in self._vanilla_chars])
@@ -117,32 +127,68 @@ class TrainingDataset:
             nv_char_to_ix[c] = ix
             nv_ix_to_char[ix] = c
 
+        if input_pad_length is None:
+            pad_size = 1 # For the <STOP> token
+        else:
+            pad_size = input_pad_length - len(input_string) + 1
+
         # Array to index into embedding array
         input_ix = np.array([self._c_to_ix[c] for c in input_string])
+        input_ix = np.concatenate([input_ix, [self._stop_ix]*pad_size])  # Pad with <STOP> tokens (always gets at least one)
+
         # One-hot encoding
-        input_one_hot = np.zeros(shape=[len(input_string), self._max_nv_chars])
+        input_one_hot = np.zeros(shape=[len(input_string) + pad_size, self._max_nv_chars]) # +1 because of the <STOP> token
         for (i, c) in enumerate(input_string):
             if c in nv_characters:
                 input_one_hot[i, nv_char_to_ix[c]] = 1.0
 
         # Label
-        label_one_hot = np.zeros(shape=[len(output_string)+1, self._stop_ix + 1])
+        if output_pad_length is None:
+            pad_size = 1 # For the <STOP> token
+        else:
+            pad_size = output_pad_length - len(output_string) + 1
+        label_one_hot = np.zeros(shape=[len(output_string)+pad_size, self.num_output_chars])
         for (i, c) in enumerate(output_string):
             if c in self._vanilla_chars:
                 label_one_hot[i, self._c_to_ix[c]] = 1.0
             else:
                 label_one_hot[i, len(self._vanilla_chars) + nv_char_to_ix[c]] = 1.0
-        label_one_hot[-1, self._stop_ix] = 1
+        label_one_hot[-1, self.stop_output_token_ix] = 1
 
-        return input_ix, input_one_hot, label_one_hot
+        return input_ix, input_one_hot, label_one_hot, len(input_string), len(output_string)
 
-    def next_training_example(self):
+    def next_training_example(self, max_input_size = None, max_output_size = None):
 
-        input_string, output_string = self._all_data[self._training_cursor]
+        suitable = False
+        while not suitable:
+            input_string, output_string = self._all_data[self._training_cursor]
+            suitable = True
+            if max_input_size  is not None and len(input_string)  > max_input_size:
+                suitable = False
+            if max_output_size is not None and len(output_string) > max_output_size:
+                suitable = False
 
         self._training_cursor = (self._training_cursor + 1) % self._N_train
 
-        return self.convert_input_output_pair(input_string, output_string)
+        return self.convert_input_output_pair(input_string, output_string,
+                                              input_pad_length = max_input_size, output_pad_length = max_output_size)
+
+    def next_batch(self, batch_size):
+
+        # FIXME - need to also pass the actual lengths of the examples
+
+        input_output_data = [self.next_training_example(max_input_size = self._max_input_size,
+                                                        max_output_size = self._max_output_size)
+                             for _ in range(batch_size)]
+
+        input_ix = np.stack([x[0] for x in input_output_data])
+        input_oh = np.stack([x[1] for x in input_output_data])
+        output_y = np.stack([x[2] for x in input_output_data])
+        input_length  = np.stack([x[3] for x in input_output_data])
+        output_length = np.stack([x[4] for x in input_output_data])
+
+        return (input_ix, input_oh, output_y, input_length, output_length)
+
 
 
 class TestsForTrainingDataset(unittest.TestCase):
