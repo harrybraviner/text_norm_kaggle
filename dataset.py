@@ -43,6 +43,7 @@ class TrainingDataset:
         self._N_val = self._N_total - self._N_train
 
         self._training_cursor = 0   # Used to keep track of which example to serve next
+        self._validation_cursor = self._N_train   # Used to keep track of which example to serve next
 
         # How many of each character does the input contain?
         self._char_counts = {}
@@ -101,7 +102,7 @@ class TrainingDataset:
         self._training_cursor = (self._training_cursor + 1) % self._N_train
 
         return input_string, output_string
-
+    
     def next_batch(self, batch_size):
 
         input_output_strings = [self.next_training_example() for _ in range(batch_size)]
@@ -113,6 +114,25 @@ class TrainingDataset:
 #        output_length = np.stack([x[4] for x in input_output_data])
 
         return input_output_strings
+    
+    def get_validation_set(self, batch_size):
+
+        done = False
+        examples_served = 0
+        while not done:
+            if (self._N_val - examples_served > batch_size):
+                batch = [self._all_data[self._N_train + examples_served + i] for i in range(batch_size)]
+                examples_served += batch_size
+                yield batch
+            else:
+                num_to_serve = self._N_val - examples_served
+                batch = [self._all_data[self._N_train + examples_served + i] for i in range(num_to_serve)]
+                examples_served += num_to_serve
+                done = True
+                yield batch
+
+            
+        
 
 
 
