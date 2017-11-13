@@ -5,19 +5,22 @@ import tensorflow as tf
 import dataset
 import argparse, os
 
-def main(log_dir, max_batches, mini_batches):
+def main(log_dir, max_batches, mini_batches, restore_params_from_file):
 
     max_input_length = 20 # Does not include the <STOP> token at the end
     max_output_length = 30  # Includes the <STOP> token at the end
+    verbose = True
+    param_checkpoint_batches = 50
+    param_checkpoint_filename = './params/model.ckpt'
 
     line_limit = 1000 if mini_batches else None
     train = dataset.TrainingDataset(line_limit = line_limit, max_input_size = max_input_length, max_output_size = max_output_length)
 
     # Set up the RNN
     # Parameters
-    layer_width_1 = 16
-    layer_width_2 = 16
-    embedding_size = 16 # Embedding for characters
+    layer_width_1 = 64
+    layer_width_2 = 64
+    embedding_size = 32 # Embedding for characters
     max_nv_chars = 10   # Max number of distinct non-vanilla characters that a single input may contain
 
     # Special token indices to input to the encoder and decoder
@@ -109,16 +112,21 @@ def main(log_dir, max_batches, mini_batches):
     tf.summary.scalar('cross entropy', cross_entropy_loss)
     
     optimizer = tf.train.AdamOptimizer(1e-4).minimize(cross_entropy_loss)
+    saver = tf.train.Saver()
 
     # Actually setup tensorflow, and the tensorboard logging
     sess = tf.Session()
     merged = tf.summary.merge_all()
     train_writer = tf.summary.FileWriter(log_dir + '/train', sess.graph)
-    sess.run(tf.global_variables_initializer())
+    if restore_params_from_file:
+        saver.restore(sess, param_checkpoint_filename)
+    else:
+        sess.run(tf.global_variables_initializer())
 
     # Variables to keep track of training
     batches_trained = 0
     samples_trained = 0
+    smoothed_cross_entropy = None
 
 
     def make_feed_dict(input_output_strings):
@@ -205,7 +213,7 @@ def main(log_dir, max_batches, mini_batches):
 
 
     def train_one_batch():
-        nonlocal batches_trained, samples_trained
+        nonlocal batches_trained, samples_trained, smoothed_cross_entropy
         #input_ix_batch, input_oh_batch, output_y_batch, input_length_batch, output_length_batch = train.next_batch(1)
 
         input_output_strings = train.next_batch(32)
@@ -213,16 +221,28 @@ def main(log_dir, max_batches, mini_batches):
         feed_dict = make_feed_dict(input_output_strings)
 
         optimizer.run(feed_dict = feed_dict, session = sess)
+        cross_entropy = sess.run(cross_entropy_loss, feed_dict = feed_dict)
 
         batches_trained += 1
         samples_trained += 1
+        if smoothed_cross_entropy is None:
+            smoothed_cross_entropy = cross_entropy
+        else:
+            smoothed_cross_entropy = 0.95*smoothed_cross_entropy + 0.05*cross_entropy
 
         if batches_trained % 5 == 0:
             summary = sess.run(merged, feed_dict = feed_dict)
             train_writer.add_summary(summary, batches_trained)
 
+            if verbose:
+                print("Trained batch {}".format(batches_trained))
+                print("Training cross-entropy (smoothed): {}".format(smoothed_cross_entropy))
+
+        if batches_trained % param_checkpoint_batches == 0:
+            save_filename = saver.save(sess, param_checkpoint_filename)
+            print('Saved model params to {}'.format(save_filename))
+
     for i in range(max_batches):
-        print("i: {}".format(i))
         train_one_batch()
 
 if __name__ == '__main__':
@@ -235,5 +255,6 @@ if __name__ == '__main__':
                         default = 1000,
                         help='Maximum number of batches to train on')
     parser.add_argument('--mini_dataset', dest='mini_dataset', action='store_true')
+    parser.add_argument('--load_params', dest='load_params', action='store_true')
     flags = parser.parse_args()
-    main(flags.log_dir, flags.max_batches, flags.mini_dataset)
+    main(flags.log_dir, flags.max_batches, flags.mini_dataset, flags.load_params)
