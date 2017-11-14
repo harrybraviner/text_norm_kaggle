@@ -118,6 +118,7 @@ def main(log_dir, max_batches, mini_batches, restore_params_from_file):
     sess = tf.Session()
     merged = tf.summary.merge_all()
     train_writer = tf.summary.FileWriter(log_dir + '/train', sess.graph)
+    val_writer   = tf.summary.FileWriter(log_dir + '/val',   sess.graph)
     if restore_params_from_file:
         saver.restore(sess, param_checkpoint_filename)
     else:
@@ -127,7 +128,6 @@ def main(log_dir, max_batches, mini_batches, restore_params_from_file):
     batches_trained = 0
     samples_trained = 0
     smoothed_cross_entropy = None
-
 
     def make_feed_dict(input_output_strings):
 
@@ -242,8 +242,30 @@ def main(log_dir, max_batches, mini_batches, restore_params_from_file):
             save_filename = saver.save(sess, param_checkpoint_filename)
             print('Saved model params to {}'.format(save_filename))
 
+    def get_validation_set_stats():
+        total_examples = 0
+        total_cross_entropy = 0
+
+        for batch in train.get_validation_set(32):
+            
+            feed_dict = make_feed_dict(batch)
+            cross_entropy = sess.run(cross_entropy_loss, feed_dict = feed_dict)
+            
+            total_examples += len(batch)
+            total_cross_entropy += len(batch) * cross_entropy
+
+        cross_entropy = total_cross_entropy / float(total_examples)
+
+        summary = sess.run(merged, feed_dict = feed_dict)
+        val_writer.add_summary(summary, batches_trained)
+
+        if verbose:
+            print('Validation set cross-entropy: {}'.format(cross_entropy))
+
     for i in range(max_batches):
         train_one_batch()
+        if i%50 == 0:
+            get_validation_set_stats()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

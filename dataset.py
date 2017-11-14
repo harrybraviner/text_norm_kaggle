@@ -93,7 +93,11 @@ class TrainingDataset:
         return len(self._vanilla_chars)
 
     def get_index_of_char(self, c):
-        return self._c_to_ix[c]
+        try:
+            return self._c_to_ix[c]
+        except:
+            # Need this in case we haven't seen the character in the training set
+            return self._rare_ix
     
     def next_training_example(self):
 
