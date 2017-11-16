@@ -78,7 +78,7 @@ class TrainingDataset:
 
         # For characters that appear rarely in the training data, just assign them to the <RARE> token
         for c in self._char_counts:
-            if self._char_counts[c] < 10:
+            if self._char_counts[c] < 10 and c not in vanilla_chars:
                 self._c_to_ix[c] = self._rare_ix
 
     def is_vanilla(self, c):
@@ -98,6 +98,12 @@ class TrainingDataset:
         except:
             # Need this in case we haven't seen the character in the training set
             return self._rare_ix
+
+    def get_vanilla_char_from_index(self, ix):
+        if ix >= 0 and ix < self._num_vanilla_chars:
+            return self._ix_to_c[ix]
+        else:
+            raise ValueError("Index {} does not represent a vanilla char (only {} vanilla chars)".format(ix, self._num_vanilla_chars))
     
     def next_training_example(self):
 

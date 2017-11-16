@@ -1,3 +1,14 @@
+# Usage
+
+Download the training data for the [Text Normalization Challenge](https://www.kaggle.com/c/text-normalization-challenge-english-language) and place the file `en_train.csv` into the `data` subdirectory.
+
+Run the command
+```
+./norm_net.py
+```
+to train a model.
+The flag `--mini_dataset` can be added to use only the first 1000 entries in the training file.
+This is useful when making changes to the code and checking that it still runs (without having to wait while the very large training dataset is processed).
 
 # Data cleaning
 
@@ -41,8 +52,6 @@ The input will be the dense embedded encoding of the character (or the embedding
 
 # Todo
 
-* Validation / accuracy output (need to recover chars from one-hot encoding).
+* Convert to a more object-oriented architecture.
 * Loading the test set? Should be made part of the TrainingDataset object (since it wants access to
   the indices of the non-vanilla characters)?
-* Training.
-* Generation of output.

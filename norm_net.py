@@ -18,8 +18,8 @@ def main(log_dir, max_batches, mini_batches, restore_params_from_file):
 
     # Set up the RNN
     # Parameters
-    layer_width_1 = 64
-    layer_width_2 = 64
+    layer_width_1 = 128
+    layer_width_2 = 128
     embedding_size = 32 # Embedding for characters
     max_nv_chars = 10   # Max number of distinct non-vanilla characters that a single input may contain
 
@@ -94,6 +94,15 @@ def main(log_dir, max_batches, mini_batches, restore_params_from_file):
 
         output_y_hat_logits = tf.tensordot(layer_2_outputs, output_layer_w, 1) + output_layer_b
 
+        # Wire up the decoder for how we'll use it when we generate output for the test set
+        decoder_single_input_ix = tf.placeholder(tf.int32, [1])
+        decoder_single_input_dense = tf.nn.embedding_lookup(embedding_matrix, decoder_single_input_ix)
+        decoder_single_state = ((tf.placeholder(tf.float32, [1, layer_width_1]), tf.placeholder(tf.float32, [1, layer_width_1])),
+                                (tf.placeholder(tf.float32, [1, layer_width_2]), tf.placeholder(tf.float32, [1, layer_width_2])))
+        decoder_y_out, decoder_state_out = rnn_decoder_multi_cell.call(decoder_single_input_dense, decoder_single_state)
+        decoder_y_logits = tf.matmul(decoder_y_out, output_layer_w) + output_layer_b
+
+
     # Loss measurement
     # We have examples of different sizes in the batch.
     # We want to equally weight examples, rather than equally weighting characters of output.
@@ -129,6 +138,57 @@ def main(log_dir, max_batches, mini_batches, restore_params_from_file):
     samples_trained = 0
     smoothed_cross_entropy = None
 
+    def generate_decode(final_state, nv_ix_to_char):
+        # final_state is the final state of the encoder (initial state of the decoder)
+
+        x_input = np.array([start_ix])
+        state_input = final_state
+
+        decode_string = []
+
+        for _ in range(max_output_length):
+            #print('x_input: {}'.format(x_input))
+
+            y_output, state_output = sess.run([decoder_y_logits, decoder_state_out],
+                                              feed_dict = {decoder_single_input_ix : x_input,
+                                                           decoder_single_state    : state_input})
+            y_output = y_output[0]
+            # The output of the decoder needs conversion to the appropriate input format
+            # owing to how we handle non-vanilla characters (and we need to select a definite y)
+
+            # Mask to ensure that we don't select a nonsense character
+            # Note - the network can't output the <START> token, so we don't need to mask that
+
+            #print('y_output: {}'.format(y_output))
+            #print('train.num_vanilla_chars: {}'.format(train.num_vanilla_chars))
+            y_output[train.num_vanilla_chars:train.num_vanilla_chars + max_nv_chars] \
+                    += np.array([-1e6 if ix not in nv_ix_to_char.keys() else 0.0 for ix in range(max_nv_chars)])
+
+            # Select the output character index
+            output_ix = np.argmax(y_output)
+
+            # Was the output <STOP>?
+            if output_ix == stop_output_ix:
+                return decode_string
+            
+            # Select either the appropriate non-rare char, <RARE>
+            if output_ix < train.num_vanilla_chars:
+                # Basically pass this back in
+                decode_string += [train.get_vanilla_char_from_index(output_ix)]
+            else:
+                # Do appropriate thing for non-vanilla / rare characters
+                nv_index = output_ix - train.num_vanilla_chars
+                if nv_index in nv_ix_to_char.keys():
+                    decode_string += [nv_ix_to_char[nv_index]]
+                else:
+                    raise ValueError("Decode string found nv index {}, but no such index present in dictionary.".format(nv_index))
+
+            # Now create the input for the next run of the decoder
+            x_input = np.array([train.get_index_of_char(decode_string[-1])])
+            state_input = state_output
+
+        return decode_string
+
     def make_feed_dict(input_output_strings):
 
         # Assign memory now
@@ -140,6 +200,8 @@ def main(log_dir, max_batches, mini_batches, restore_params_from_file):
         input_length_batch  = np.zeros([batch_size])
         output_length_batch = np.zeros([batch_size])
         weight_mask_batch = np.zeros([batch_size, max_output_length+1])
+
+        nv_ix_to_char_batch = []
 
 
         for (n, (input_string, output_string)) in enumerate(input_output_strings):
@@ -201,14 +263,17 @@ def main(log_dir, max_batches, mini_batches, restore_params_from_file):
             input_length_batch[n]  = len(input_string)  + 1   # +1 for <STOP> token
             output_length_batch[n] = len(output_string) + 1   # +1 for <STOP> token
 
-        return { input_ix : input_ix_batch,
-                 input_oh : input_oh_batch,
-                 output_y : output_y_batch,
-                 decoder_input_ix : decoder_input_ix_batch,
-                 input_length  : input_length_batch,
-                 output_length : output_length_batch,
-                 weight_mask   : weight_mask_batch
-               }
+            nv_ix_to_char_batch += [nv_ix_to_char]
+
+        return ({ input_ix : input_ix_batch,
+                  input_oh : input_oh_batch,
+                  output_y : output_y_batch,
+                  decoder_input_ix : decoder_input_ix_batch,
+                  input_length  : input_length_batch,
+                  output_length : output_length_batch,
+                  weight_mask   : weight_mask_batch
+                },
+                nv_ix_to_char_batch)
 
 
 
@@ -218,7 +283,7 @@ def main(log_dir, max_batches, mini_batches, restore_params_from_file):
 
         input_output_strings = train.next_batch(32)
 
-        feed_dict = make_feed_dict(input_output_strings)
+        feed_dict, _ = make_feed_dict(input_output_strings)
 
         optimizer.run(feed_dict = feed_dict, session = sess)
         cross_entropy = sess.run(cross_entropy_loss, feed_dict = feed_dict)
@@ -246,14 +311,43 @@ def main(log_dir, max_batches, mini_batches, restore_params_from_file):
         total_examples = 0
         total_cross_entropy = 0
 
+        total_correct_chars = 0
+        total_char_count = 0
+
         for batch in train.get_validation_set(32):
             
-            feed_dict = make_feed_dict(batch)
+            feed_dict, nv_ix_to_char_batch = make_feed_dict(batch)
             cross_entropy = sess.run(cross_entropy_loss, feed_dict = feed_dict)
+            final_states = sess.run(final_state, feed_dict = feed_dict)
+
+            #print('final_states: {}'.format(final_states))
             
             total_examples += len(batch)
             total_cross_entropy += len(batch) * cross_entropy
 
+            #output_strings = []
+            for (batch_ix, (input_string, output_string)) in enumerate(batch):
+                final_state_this = \
+                    [
+                        [ np.stack([x[0]], axis=0) for x in level ]
+                        for level in final_states
+                    ]
+                nv_ix_to_char_this = nv_ix_to_char_batch[batch_ix]
+                decode_string = generate_decode(final_state_this, nv_ix_to_char_this)
+
+                #output_strings += decode_string
+
+                correct = 0
+                for (i, y) in enumerate(decode_string):
+                    if i < len(output_string) and decode_string[i] == output_string[i]:
+                        correct += 1
+                print('input: {}'.format(input_string))
+                print('output: {}'.format(output_string))
+                print('decode: {}'.format(decode_string))
+                total_correct_chars += correct
+                total_char_count += len(decode_string)
+
+        char_level_acc = correct / total_char_count
         cross_entropy = total_cross_entropy / float(total_examples)
 
         summary = sess.run(merged, feed_dict = feed_dict)
@@ -261,6 +355,7 @@ def main(log_dir, max_batches, mini_batches, restore_params_from_file):
 
         if verbose:
             print('Validation set cross-entropy: {}'.format(cross_entropy))
+            print('Char level accuracy: {}'.format(char_level_acc))
 
     for i in range(max_batches):
         train_one_batch()
