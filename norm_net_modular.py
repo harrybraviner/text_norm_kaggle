@@ -70,22 +70,12 @@ class Encoder(RecurrentNet):
         # Call to superclass builds the recurrent part of the net
         super(Encoder, self).build_core_rnn()
 
-#        # FIXME - move the stuff below to the Decoder
-#        #n_in = self._layer_sizes[-1]
-#        #n_out = self._n_out
-#        ## Xavier initialization of weights
-#        #c = np.sqrt(6.0 / (n_in + n_out))
-#        #self._fc_weights = tf.Variable(tf.random_uniform(shape = [n_in, n_out], minval = -c, maxval = +c, dtype=np.float32))
-#        #self._fc_bias = tf.Variable(tf.zeros(shape = [n_out], dtype=np.float32))
-#        #self._output_y_logits = self._multi_cell
-#        self.built = True
-
     def connect(self, inputs, seq_lengths):
         """Returns the output_state tensor that the encoder produces.
 
         Args:
             inputs: Rank 3 tensor of dimensions [batch_size, max seq length, embedding size]
-            sequence_length: Rank 1 tensor of dimensions [batch_size] giving the actual sequence lengths
+            seq_lengths: Rank 1 tensor of dimensions [batch_size] giving the actual sequence lengths
         """
         if len(inputs.shape) != 3:
             raise ValueError('inputs must be a rank 3 tensor, but rank is {}'.format(len(inputs.shape)))
@@ -101,6 +91,49 @@ class Encoder(RecurrentNet):
                                             sequence_length = seq_lengths,
                                             dtype           = tf.float32)
         return output_state
+
+class Decoder(RecurrentNet):
+
+    def __init__(self, params, cell_type = 'LSTM'):
+        super(Decoder, self).__init__(params, cell_type)
+
+    def build(self):
+        super(Decoder, self).build_core_rnn()
+
+        # Fully connected net for output
+        # Xavier initialization of weights
+        n_in = self._layer_sizes[-1]
+        n_out = self._n_out
+        c = np.sqrt(6.0 / (n_in + n_out))
+        self._fc_weights = tf.Variable(tf.random_uniform(shape = [n_in, n_out], minval = -c, maxval = +c, dtype=np.float32))
+        self._fc_bias = tf.Variable(tf.zeros(shape = [n_out], dtype=np.float32))
+
+        self.built = True
+
+    def connect(self, initial_state, hint_inputs, seq_lengths):
+        """Returns the tensor of output sequences that the decoder produces.
+
+        Args:
+            initial_state: The final state of the encoder network. Shape depends on the number of layers and type of cells.
+            hint_inputs: The 'previous' characters. i.e. these are the target output sequences, delayed by one time unit and with a <START> token prepended.
+            seq_lengths: Rank 1 tensor of dimensions [batch_size] giving the actual sequence lengths
+        """
+        # FIXME - some kind of test of the shape of the initial_state tensor. Will be a bit tricky to write, but important.
+        if len(seq_lengths.shape) != 1:
+            raise ValueError('seq_lengths must be a rank 1 tensor, but rank is {}'.format(len(seq_lengths.shape)))
+
+        if not self.built:
+            # Construct the rnn cells and the fully connected weights
+            self.build()
+
+        self._rnn_output, _ = tf.nn.dynamic_rnn(cell            = self._multi_cell,
+                                          inputs          = hint_inputs,
+                                          sequence_length = seq_lengths,
+                                          initial_state   = initial_state,
+                                          dtype           = tf.float32)
+        output_y_logits = tf.tensordot(self._rnn_output, self._fc_weights, axes = 1) + self._fc_bias
+
+        return output_y_logits
 
 class TranslationNet:
     """This constructs both an Encoder and Decoder, and handles passing
@@ -215,6 +248,15 @@ class EncoderTests(unittest.TestCase):
             # Check that the shape is what we expect
             self.assertEqual([[_get_shape(hc) for hc in layer] for layer in final_state],
                              [[[None, 10], [None, 10]], [[None, 20], [None, 20]]])
+
+class DecoderTests(unittest.TestCase):
+
+    def test_construction_and_building(self):
+
+        with tf.variable_scope('DecoderTests'):
+            params = _example_params
+            net = Decoder(params, cell_type = 'LSTM')
+            net.build()
 
 class TranslationNetTests(unittest.TestCase):
 
