@@ -10,6 +10,7 @@ _example_params = {
     'n_out' : 50,
     'max_input_size'  : 20,
     'max_output_size' : 30,
+    'embedding_size'  : 32,
     'cell_type'    : 'LSTM',
     'layer_size_1' : 10,
     'layer_size_2' : 20
@@ -200,14 +201,14 @@ class TranslationNet:
 
     """
 
-    def __init__(self, params, embedding_size = 32, mini_dataset = False):
+    def __init__(self, params, mini_dataset = False):
         _assert_like_parameters(params)
 
         self._params = params   # Save for passeing to encoder and decoder
         self._max_input_size  = params['max_input_size']
         self._max_output_size = params['max_output_size']
         self._cell_type = params['cell_type']
-        self._embedding_size = embedding_size
+        self._embedding_size = params['embedding_size']
 
         self.built = False
 
@@ -256,6 +257,7 @@ class LikeParameterTests(unittest.TestCase):
             'num_layers' : 2,
             'max_input_size'  : 20,
             'max_output_size' : 30,
+            'embedding_size'  : 32,
             'cell_type'    : 'LSTM',
             'layer_size_1' : 10,
             'layer_size_2' : 20
@@ -268,6 +270,7 @@ class LikeParameterTests(unittest.TestCase):
             'num_layers' : 2,
             'max_input_size'  : 20,
             'max_output_size' : 30,
+            'embedding_size'  : 32,
             'cell_type'    : 'LSTM',
             'n_out' : 50,
             'layer_size_1' : 10,
