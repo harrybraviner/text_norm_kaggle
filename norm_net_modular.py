@@ -30,6 +30,57 @@ def _assert_valid_cell_type(x):
     if x not in ['Basic', 'LSTM', 'GRU']:
         raise ValueError('Allowed cell types are "Basic", "LSTM" and "GRU". Got {}.'.format(x))
 
+def _get_shape(t):
+    """Get the shape of a tensor as a list,
+    since that's more convenient for our tests.
+    """
+    return [x.value for x in t.shape]
+
+def _assert_like_multi_cell_state(x, layer_sizes, cell_type):
+    """Check that the state passed into a function is of the expected shape.
+    Note: I am assuming that x comes from a multi_cell. If not, then it will be
+    a tensor, rather than an iterable of tensors, and this function will fail.
+    Don't blindly reuse this function if you need to cover that use case!
+    
+    Args:
+        x: Tuple or list of tensors
+        layer_sizes: The layer sizes we want to check for compatability with.
+        cell_type: Different cell types produce different shapes of output
+    """
+    if cell_type == 'Basic' or cell_type == 'GRU':  # Basic and GRU states have same shape
+        try:
+            shapes = [_get_shape(layer) for layer in x]
+        except:
+            raise ValueError('State did not have expected form for Basic or GRU rnn state. Got:\n{}'.format(x))
+        batch_size = shapes[0][0]
+        for (i, s) in enumerate(shapes):
+            if s[0] != batch_size:
+                raise ValueError('Inconsistent batch sizes. Expected {} based on 0th layer, but found {} in layer {}.'
+                                 .format(batch_size, s[0], i))
+            if s[1] != layer_sizes[i]:
+                raise ValueError('State size at layer {} was {}, but layer size is {}.'.format(i, s[1], layer_sizes[i]))
+        return
+    elif cell_type == 'LSTM':
+        try:
+            shapes = [[_get_shape(xx) for xx in layer] for layer in x]
+        except:
+            raise ValueError('State did not have expected form for LSTM state. Got:\n{}'.format(x))
+        batch_size = shapes[0][0][0]
+        for (i, s) in enumerate(shapes):
+            if s[0][0] != batch_size:
+                raise ValueError('Inconsistent batch sizes. Expected {} based on 0th layer, but found {} in c in layer {}.'
+                                 .format(batch_size, s[0][0], i))
+            if s[1][0] != batch_size:
+                raise ValueError('Inconsistent batch sizes. Expected {} based on 0th layer, but found {} in h in layer {}.'
+                                 .format(batch_size, s[1][0], i))
+            if s[0][1] != layer_sizes[i]:
+                raise ValueError('State size in c at layer {} was {}, but layer size is {}.'.format(i, s[0][1], layer_sizes[i]))
+            if s[1][1] != layer_sizes[i]:
+                raise ValueError('State size in h at layer {} was {}, but layer size is {}.'.format(i, s[1][1], layer_sizes[i]))
+        return
+    else:
+        raise ValueError('Allowed cell types are "Basic", "LSTM" and "GRU". Got {}.'.format(x))
+
 class RecurrentNet:
     """Base class - do not instantiate this.
     Contains the common code for defining the RNN part of the Encoder and Decoder nets.
@@ -118,7 +169,7 @@ class Decoder(RecurrentNet):
             hint_inputs: The 'previous' characters. i.e. these are the target output sequences, delayed by one time unit and with a <START> token prepended.
             seq_lengths: Rank 1 tensor of dimensions [batch_size] giving the actual sequence lengths
         """
-        # FIXME - some kind of test of the shape of the initial_state tensor. Will be a bit tricky to write, but important.
+        _assert_like_multi_cell_state(initial_state, self._layer_sizes, self._cell_type)
         if len(seq_lengths.shape) != 1:
             raise ValueError('seq_lengths must be a rank 1 tensor, but rank is {}'.format(len(seq_lengths.shape)))
 
@@ -126,7 +177,7 @@ class Decoder(RecurrentNet):
             # Construct the rnn cells and the fully connected weights
             self.build()
 
-        self._rnn_output, _ = tf.nn.dynamic_rnn(cell            = self._multi_cell,
+        self._rnn_output, _ = tf.nn.dynamic_rnn(cell      = self._multi_cell,
                                           inputs          = hint_inputs,
                                           sequence_length = seq_lengths,
                                           initial_state   = initial_state,
@@ -188,12 +239,6 @@ class TranslationNet:
         self.built = True
 
 
-def _get_shape(t):
-    """Get the shape of a tensor as a list,
-    since that's more convenient for our tests.
-    """
-    return [x.value for x in t.shape]
-
 class LikeParameterTests(unittest.TestCase):
 
     def test_success(self):
@@ -224,6 +269,89 @@ class LikeParameterTests(unittest.TestCase):
         }
         with self.assertRaises(ValueError):
             _assert_like_parameters(params)
+
+class AssertLikeMultiCellStateTests(unittest.TestCase):
+
+    def test_basic_rnn_correct(self):
+        with tf.variable_scope('shape_basic_test_correct'):
+            c1 = tf.contrib.rnn.BasicRNNCell(10)
+            c2 = tf.contrib.rnn.BasicRNNCell(13)
+            c3 = tf.contrib.rnn.BasicRNNCell(20)
+            mc = tf.contrib.rnn.MultiRNNCell([c1, c2, c3])
+            i = tf.placeholder(dtype=tf.float32, shape=[None, 5, 50])
+
+            _, out_state = tf.nn.dynamic_rnn(cell = mc, inputs=i, dtype=tf.float32)
+            _assert_like_multi_cell_state(out_state, layer_sizes = [10, 13, 20], cell_type='Basic')
+
+    def test_basic_rnn_fail_1(self):
+        with tf.variable_scope('shape_basic_test_fail_1'):
+            c1 = tf.contrib.rnn.BasicRNNCell(10)
+            c2 = tf.contrib.rnn.BasicRNNCell(13)
+            c3 = tf.contrib.rnn.BasicRNNCell(20)
+            mc = tf.contrib.rnn.MultiRNNCell([c1, c2, c3])
+            i = tf.placeholder(dtype=tf.float32, shape=[None, 5, 50])
+
+            _, out_state = tf.nn.dynamic_rnn(cell = mc, inputs=i, dtype=tf.float32)
+            with self.assertRaises(ValueError):
+                _assert_like_multi_cell_state(out_state, layer_sizes = [10, 12, 20], cell_type='Basic')
+
+    def test_lstm_correct(self):
+        with tf.variable_scope('shape_lstm_test_correct'):
+            c1 = tf.contrib.rnn.BasicLSTMCell(10)
+            c2 = tf.contrib.rnn.BasicLSTMCell(13)
+            c3 = tf.contrib.rnn.BasicLSTMCell(20)
+            mc = tf.contrib.rnn.MultiRNNCell([c1, c2, c3])
+            i = tf.placeholder(dtype=tf.float32, shape=[None, 5, 50])
+
+            _, out_state = tf.nn.dynamic_rnn(cell = mc, inputs=i, dtype=tf.float32)
+            _assert_like_multi_cell_state(out_state, layer_sizes = [10, 13, 20], cell_type='LSTM')
+
+    def test_lstm_fail_1(self):
+        with tf.variable_scope('shape_lstm_test_fail_1'):
+            c1 = tf.contrib.rnn.BasicLSTMCell(10)
+            c2 = tf.contrib.rnn.BasicLSTMCell(13)
+            c3 = tf.contrib.rnn.BasicLSTMCell(20)
+            mc = tf.contrib.rnn.MultiRNNCell([c1, c2, c3])
+            i = tf.placeholder(dtype=tf.float32, shape=[None, 5, 50])
+
+            _, out_state = tf.nn.dynamic_rnn(cell = mc, inputs=i, dtype=tf.float32)
+            with self.assertRaises(ValueError):
+                _assert_like_multi_cell_state(out_state, layer_sizes = [10, 12, 20], cell_type='LSTM')
+
+    def test_lstm_fail_2(self):
+        with tf.variable_scope('shape_lstm_test_fail_2'):
+            c1 = tf.contrib.rnn.BasicLSTMCell(10)
+            c2 = tf.contrib.rnn.BasicLSTMCell(13)
+            c3 = tf.contrib.rnn.BasicLSTMCell(20)
+            mc = tf.contrib.rnn.MultiRNNCell([c1, c2, c3])
+            i = tf.placeholder(dtype=tf.float32, shape=[None, 5, 50])
+
+            _, out_state = tf.nn.dynamic_rnn(cell = mc, inputs=i, dtype=tf.float32)
+            with self.assertRaises(ValueError):
+                _assert_like_multi_cell_state(out_state, layer_sizes = [10, 13, 20], cell_type='Basic')
+
+    def test_gru_rnn_correct(self):
+        with tf.variable_scope('shape_gru_test_correct'):
+            c1 = tf.contrib.rnn.GRUCell(10)
+            c2 = tf.contrib.rnn.GRUCell(13)
+            c3 = tf.contrib.rnn.GRUCell(20)
+            mc = tf.contrib.rnn.MultiRNNCell([c1, c2, c3])
+            i = tf.placeholder(dtype=tf.float32, shape=[None, 5, 50])
+
+            _, out_state = tf.nn.dynamic_rnn(cell = mc, inputs=i, dtype=tf.float32)
+            _assert_like_multi_cell_state(out_state, layer_sizes = [10, 13, 20], cell_type='GRU')
+
+    def test_gru_rnn_fail_1(self):
+        with tf.variable_scope('shape_gru_test_fail_1'):
+            c1 = tf.contrib.rnn.GRUCell(10)
+            c2 = tf.contrib.rnn.GRUCell(13)
+            c3 = tf.contrib.rnn.GRUCell(20)
+            mc = tf.contrib.rnn.MultiRNNCell([c1, c2, c3])
+            i = tf.placeholder(dtype=tf.float32, shape=[None, 5, 50])
+
+            _, out_state = tf.nn.dynamic_rnn(cell = mc, inputs=i, dtype=tf.float32)
+            with self.assertRaises(ValueError):
+                _assert_like_multi_cell_state(out_state, layer_sizes = [10, 12, 20], cell_type='GRU')
 
 class RecurrentNetTests(unittest.TestCase):
     
