@@ -10,25 +10,27 @@ _example_params = {
     'n_out' : 50,
     'max_input_size'  : 20,
     'max_output_size' : 30,
+    'cell_type'    : 'LSTM',
     'layer_size_1' : 10,
     'layer_size_2' : 20
 }
 
+def _assert_valid_cell_type(x):
+    if x not in ['Basic', 'LSTM', 'GRU']:
+        raise ValueError('Allowed cell types are "Basic", "LSTM" and "GRU". Got {}.'.format(x))
+
 def _assert_like_parameters(x):
     if type(x) != dict:
         raise ValueError('Parameters should be a dict.')
-    required_keys = ['num_layers', 'n_out', 'max_input_size', 'max_output_size']
+    required_keys = ['num_layers', 'n_out', 'max_input_size', 'cell_type', 'max_output_size']
     actual_keys = x.keys()
     for k in required_keys:
         if k not in actual_keys:
             raise ValueError('Key {} is missing from parameters.'.format(k))
+    _assert_valid_cell_type(x['cell_type'])
     for i in range(1, x['num_layers'] + 1):
         if 'layer_size_{}'.format(i) not in actual_keys:
             raise ValueError('Key {} is missing from parameters.'.format('layer_size_{}'.format(i)))
-
-def _assert_valid_cell_type(x):
-    if x not in ['Basic', 'LSTM', 'GRU']:
-        raise ValueError('Allowed cell types are "Basic", "LSTM" and "GRU". Got {}.'.format(x))
 
 def _get_shape(t):
     """Get the shape of a tensor as a list,
@@ -86,10 +88,9 @@ class RecurrentNet:
     Contains the common code for defining the RNN part of the Encoder and Decoder nets.
     """
 
-    def __init__(self, params, cell_type = 'LSTM'):
+    def __init__(self, params):
         _assert_like_parameters(params)
-        _assert_valid_cell_type(cell_type)
-        self._cell_type = cell_type
+        self._cell_type = params['cell_type']
         self._layer_sizes = [params['layer_size_{}'.format(i+1)] for i in range(params['num_layers'])]
         self._n_out = params['n_out']
 
@@ -114,12 +115,13 @@ class RecurrentNet:
 
 class Encoder(RecurrentNet):
 
-    def __init__(self, params, cell_type = 'LSTM'):
-        super(Encoder, self).__init__(params, cell_type)
+    def __init__(self, params):
+        super(Encoder, self).__init__(params)
 
     def build(self):
-        # Call to superclass builds the recurrent part of the net
-        super(Encoder, self).build_core_rnn()
+        with tf.variable_scope('encoder'):
+            # Call to superclass builds the recurrent part of the net
+            super(Encoder, self).build_core_rnn()
 
     def connect(self, inputs, seq_lengths):
         """Returns the output_state tensor that the encoder produces.
@@ -137,27 +139,29 @@ class Encoder(RecurrentNet):
             # Construct the rnn cells
             self.build()
 
-        _, output_state = tf.nn.dynamic_rnn(cell            = self._multi_cell,
-                                            inputs          = inputs,
-                                            sequence_length = seq_lengths,
-                                            dtype           = tf.float32)
+        with tf.variable_scope('encoder'):
+            _, output_state = tf.nn.dynamic_rnn(cell            = self._multi_cell,
+                                                inputs          = inputs,
+                                                sequence_length = seq_lengths,
+                                                dtype           = tf.float32)
         return output_state
 
 class Decoder(RecurrentNet):
 
-    def __init__(self, params, cell_type = 'LSTM'):
-        super(Decoder, self).__init__(params, cell_type)
+    def __init__(self, params):
+        super(Decoder, self).__init__(params)
 
     def build(self):
-        super(Decoder, self).build_core_rnn()
+        with tf.variable_scope('decoder'):
+            super(Decoder, self).build_core_rnn()
 
-        # Fully connected net for output
-        # Xavier initialization of weights
-        n_in = self._layer_sizes[-1]
-        n_out = self._n_out
-        c = np.sqrt(6.0 / (n_in + n_out))
-        self._fc_weights = tf.Variable(tf.random_uniform(shape = [n_in, n_out], minval = -c, maxval = +c, dtype=np.float32))
-        self._fc_bias = tf.Variable(tf.zeros(shape = [n_out], dtype=np.float32))
+            # Fully connected net for output
+            # Xavier initialization of weights
+            n_in = self._layer_sizes[-1]
+            n_out = self._n_out
+            c = np.sqrt(6.0 / (n_in + n_out))
+            self._fc_weights = tf.Variable(tf.random_uniform(shape = [n_in, n_out], minval = -c, maxval = +c, dtype=np.float32))
+            self._fc_bias = tf.Variable(tf.zeros(shape = [n_out], dtype=np.float32))
 
         self.built = True
 
@@ -174,14 +178,15 @@ class Decoder(RecurrentNet):
             raise ValueError('seq_lengths must be a rank 1 tensor, but rank is {}'.format(len(seq_lengths.shape)))
 
         if not self.built:
-            # Construct the rnn cells and the fully connected weights
+            # Construct the rnn cells and the final (fully connected) layer weights
             self.build()
 
-        self._rnn_output, _ = tf.nn.dynamic_rnn(cell      = self._multi_cell,
-                                          inputs          = hint_inputs,
-                                          sequence_length = seq_lengths,
-                                          initial_state   = initial_state,
-                                          dtype           = tf.float32)
+        with tf.variable_scope('decoder'):
+            self._rnn_output, _ = tf.nn.dynamic_rnn(cell      = self._multi_cell,
+                                              inputs          = hint_inputs,
+                                              sequence_length = seq_lengths,
+                                              initial_state   = initial_state,
+                                              dtype           = tf.float32)
         output_y_logits = tf.tensordot(self._rnn_output, self._fc_weights, axes = 1) + self._fc_bias
 
         return output_y_logits
@@ -195,14 +200,13 @@ class TranslationNet:
 
     """
 
-    def __init__(self, params, cell_type = 'LSTM', embedding_size = 32, mini_dataset = False):
+    def __init__(self, params, embedding_size = 32, mini_dataset = False):
         _assert_like_parameters(params)
-        _assert_valid_cell_type(cell_type)
 
         self._params = params   # Save for passeing to encoder and decoder
         self._max_input_size  = params['max_input_size']
         self._max_output_size = params['max_output_size']
-        self._cell_type = cell_type
+        self._cell_type = params['cell_type']
         self._embedding_size = embedding_size
 
         self.built = False
@@ -229,7 +233,7 @@ class TranslationNet:
 
         self._unnorm_seq_lengths = tf.placeholder(shape = [None], dtype=tf.int32)
 
-        self._encoder = Encoder(self._params, cell_type = self._cell_type)
+        self._encoder = Encoder(self._params)
 
         # 'Wire up' the circuit (self._unnorm_ix, self._unnorm_seq_lengths) --> self._encoder_state_out
         self._encoder_state_out = self._encoder.connect(self._encoder_input, seq_lengths = self._unnorm_seq_lengths)
@@ -237,7 +241,6 @@ class TranslationNet:
         # FIXME - need to do the decoder
 
         self.built = True
-
 
 class LikeParameterTests(unittest.TestCase):
 
@@ -253,6 +256,7 @@ class LikeParameterTests(unittest.TestCase):
             'num_layers' : 2,
             'max_input_size'  : 20,
             'max_output_size' : 30,
+            'cell_type'    : 'LSTM',
             'layer_size_1' : 10,
             'layer_size_2' : 20
         }
@@ -264,6 +268,7 @@ class LikeParameterTests(unittest.TestCase):
             'num_layers' : 2,
             'max_input_size'  : 20,
             'max_output_size' : 30,
+            'cell_type'    : 'LSTM',
             'n_out' : 50,
             'layer_size_1' : 10,
         }
@@ -357,7 +362,7 @@ class RecurrentNetTests(unittest.TestCase):
     
     def test_contruction_and_building(self):
         params = _example_params
-        net = RecurrentNet(params, cell_type='LSTM')
+        net = RecurrentNet(params)
         net.build_core_rnn()
         self.assertTrue(net.built)
 
@@ -366,7 +371,7 @@ class EncoderTests(unittest.TestCase):
     def test_contruction_and_building(self):
         with tf.variable_scope('EncoderTests'):
             params = _example_params
-            net = Encoder(params, cell_type='LSTM')
+            net = Encoder(params)
             net.build_core_rnn()
             self.assertTrue(net.built)
             
@@ -383,8 +388,20 @@ class DecoderTests(unittest.TestCase):
 
         with tf.variable_scope('DecoderTests'):
             params = _example_params
-            net = Decoder(params, cell_type = 'LSTM')
+            net = Decoder(params)
             net.build()
+
+    def test_encoder_decoder_wiring(self):
+        with tf.variable_scope('DecoderEncoderTests'):
+            params = _example_params
+            encoder = Encoder(params)
+            decoder = Decoder(params)
+
+            input_embedded = tf.placeholder(shape=[None, 20, 50], dtype = tf.float32)
+            hint_input_embedded = tf.placeholder(shape=[None, 30, 50], dtype = tf.float32)
+            seq_lengths = tf.placeholder(shape = [None], dtype = tf.int32)
+            final_state = encoder.connect(inputs = input_embedded, seq_lengths = seq_lengths)
+            output_y_logits = decoder.connect(final_state, hint_input_embedded, seq_lengths = seq_lengths)
 
 class TranslationNetTests(unittest.TestCase):
 
@@ -399,4 +416,3 @@ class TranslationNetTests(unittest.TestCase):
             self.assertEqual(_get_shape(net._unnorm_ix), [None, net.training_dataset.num_non_rare_chars + 3])
 
 # FIXME - add a test to inspect the trainable weights at the end of this!
-# FIXME - add automatic naming of variables?
