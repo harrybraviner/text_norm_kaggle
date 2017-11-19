@@ -11,6 +11,7 @@ _example_params = {
     'max_input_size'  : 20,
     'max_output_size' : 30,
     'embedding_size'  : 32,
+    'max_nv_chars'    : 10,
     'cell_type'    : 'LSTM',
     'layer_size_1' : 10,
     'layer_size_2' : 20
@@ -23,7 +24,7 @@ def _assert_valid_cell_type(x):
 def _assert_like_parameters(x):
     if type(x) != dict:
         raise ValueError('Parameters should be a dict.')
-    required_keys = ['num_layers', 'n_out', 'max_input_size', 'cell_type', 'max_output_size']
+    required_keys = ['num_layers', 'n_out', 'max_input_size', 'max_nv_chars', 'cell_type', 'max_output_size']
     actual_keys = x.keys()
     for k in required_keys:
         if k not in actual_keys:
@@ -128,7 +129,7 @@ class Encoder(RecurrentNet):
         """Returns the output_state tensor that the encoder produces.
 
         Args:
-            inputs: Rank 3 tensor of dimensions [batch_size, max seq length, embedding size]
+            inputs: Rank 3 tensor of dimensions [batch_size, max seq length, embedding size + max_nv_chars]
             seq_lengths: Rank 1 tensor of dimensions [batch_size] giving the actual sequence lengths
         """
         if len(inputs.shape) != 3:
@@ -211,6 +212,7 @@ class TranslationNet:
         self._padded_max_output_size = self._max_output_size + 1  # Padding with <STOP> token
         self._cell_type = params['cell_type']
         self._embedding_size = params['embedding_size']
+        self._max_nv_chars = params['max_nv_chars']
 
         self.built = False
 
@@ -225,16 +227,22 @@ class TranslationNet:
         self._input_stop_ix  = self.training_dataset.num_non_rare_chars + 1
         self._input_start_ix = self.training_dataset.num_non_rare_chars + 2
         self._num_input_tokens = self._input_start_ix + 1
+        # For the decoder output, non-vanilla characters must be coded using the one-hot token pased in as input
+        self._output_stop_ix = self.training_dataset.num_vanilla_chars + self._max_nv_chars
+        self._num_output_tokens = self.training_dataset.num_vanilla_chars + self._max_nv_chars + 1
 
     def build(self):
         self._unnorm_ix = tf.placeholder(shape = [None, self._padded_max_input_size], dtype = tf.int32)
+        self._unnorm_nv = tf.placeholder(shape = [None, self._padded_max_input_size, self._max_nv_chars], dtype = tf.float32)
         self._norm_hint_ix = tf.placeholder(shape = [None, self._padded_max_output_size], dtype = tf.int32)
         if self._embedding_size is not None:
             self._embedding_matrix = tf.Variable(tf.truncated_normal([self._num_input_tokens, self._embedding_size], mean=0.1, stddev=0.02))
-            self._encoder_input = tf.nn.embedding_lookup(self._embedding_matrix, self._unnorm_ix)
+            self._encoder_input = tf.concat([tf.nn.embedding_lookup(self._embedding_matrix, self._unnorm_ix),
+                                             self._unnorm_nv], axis = 2)
             self._decoder_hint_input = tf.nn.embedding_lookup(self._embedding_matrix, self._norm_hint_ix)
         else:
-            self._encoder_input = tf.one_hot(indices = self._unnorm_ix, depth = self._num_input_tokens)
+            self._encoder_input = tf.concat([tf.one_hot(indices = self._unnorm_ix, depth = self._num_input_tokens),
+                                             self._unnorm_nv], axis = 2)
             self._decoder_hint_input = tf.one_hot(indices = self._norm_hint_ix, depth = self._num_input_tokens)
 
         self._unnorm_seq_lengths = tf.placeholder(shape = [None], dtype=tf.int32)
@@ -252,26 +260,53 @@ class TranslationNet:
 
         self.built = True
 
-    def convert_unnorm_to_input(self, nv_to_ix, unnorm_string):
+    def convert_unnorm_to_input_ix(self, unnorm_string):
         """Takes a string and converts it to the input format expected by the encoder.
         This is a one-hot vector, plus an 'at-most-one-hot' vector for encoding
         non-vanilla characters.
 
         Args:
+            unnorm_string: The string we wish to convert.
+        """
+        if len(unnorm_string) > self._max_input_size:
+            raise ValueError('Input string had length {}, but max allowed is {}.'.format(len(unnorm_string), self._max_input_size))
+        output = np.zeros(dtype = np.int32, shape = [self._padded_max_input_size])
+        for (i, c) in enumerate(unnorm_string):
+            output[i] = self.training_dataset.get_index_of_char(c)
+        output[len(unnorm_string)] = self._input_stop_ix
+        return output
+
+    def convert_unnorm_to_input_nv(self, nv_to_ix, unnorm_string):
+        """Takes a string and converts the non-vanilla characters in it to the relevant one-hot
+        tokens for input into the encoder. Vanilla characters just produce a zero vector.
+
+        Args:
             nv_to_ix: Dictionary mapping non-vanilla characters in the string to one-hot indices.
             unnorm_string: The string we wish to convert.
         """
-        raise NotImplementedError
+        if len(unnorm_string) > self._max_input_size:
+            raise ValueError('Input string had length {}, but max allowed is {}.'.format(len(unnorm_string), self._max_input_size))
+        output = np.zeros(dtype = np.float32, shape = [self._padded_max_input_size, self._max_nv_chars])
+        for (i, c) in enumerate(unnorm_string):
+            if not self.training_dataset.is_vanilla(c):
+                output[i, nv_to_ix[c]] = 1.0
+        return output
 
     def convert_norm_to_input(self, norm_string):
-        """Takes a normalised string and converts it to a sequence of one-hot tokens for
+        """Takes a normalised string and converts it to a sequence of tokens indices for
         input to the decoder. The <START> token is placed at the beginning and the whole
         sequence is 'delayed' by one.
 
         Args:
             norm_string: The string we wish to convert.
         """
-        raise NotImplementedError
+        if len(norm_string) > self._max_output_size:
+            raise ValueError('Input string had length {}, but max allowed is {}.'.format(len(norm_string), self._max_output_size))
+        output = np.zeros(dtype = np.int32, shape = [self._padded_max_output_size])
+        output[0] = self._input_start_ix
+        for (i, c) in enumerate(norm_string):
+            output[i+1] = self.training_dataset.get_index_of_char(c)
+        return output
 
     def convert_norm_to_output(self, nv_to_ix, norm_string):
         """Takes a normalised string and converts it to the one-hot format that we are
@@ -281,7 +316,22 @@ class TranslationNet:
             nv_to_ix: Dictionary mapping non-vanilla characters in the string to one-hot indices.
             norm_string: The string we wish to convert.
         """
-        raise NotImplementedError
+        if len(norm_string) > self._max_output_size:
+            raise ValueError('Input string had length {}, but max allowed is {}.'.format(len(norm_string), self._max_output_size))
+        output = np.zeros(dtype = np.float32, shape = [self._padded_max_output_size, self._num_output_tokens])
+        for (i, c) in enumerate(norm_string):
+            if self.training_dataset.is_vanilla(c):
+                ix = self.training_dataset.get_index_of_char(c)
+            else:
+                try:
+                    # Non-vanilla output tokens come straight after vanilla character tokens
+                    ix = self.training_dataset.num_vanilla_chars + nv_to_ix[c]
+                except:
+                    raise ValueError('Input string contained character {}, which was neither vanilla, nor present in the nv_to_ix dictionary.'.format(c))
+            output[i, ix] = 1.0
+        # Append <STOP> token at the end
+        output[len(norm_string), self._output_stop_ix] = 1.0
+        return output
 
 class LikeParameterTests(unittest.TestCase):
 
@@ -298,6 +348,7 @@ class LikeParameterTests(unittest.TestCase):
             'max_input_size'  : 20,
             'max_output_size' : 30,
             'embedding_size'  : 32,
+            'max_nv_chars'    : 10,
             'cell_type'    : 'LSTM',
             'layer_size_1' : 10,
             'layer_size_2' : 20
@@ -311,6 +362,7 @@ class LikeParameterTests(unittest.TestCase):
             'max_input_size'  : 20,
             'max_output_size' : 30,
             'embedding_size'  : 32,
+            'max_nv_chars'    : 10,
             'cell_type'    : 'LSTM',
             'n_out' : 50,
             'layer_size_1' : 10,
@@ -457,8 +509,38 @@ class TranslationNetTests(unittest.TestCase):
 
             # Should have 3 special tokens: <RARE>, <START>, and <STOP>
             self.assertEqual(net._num_input_tokens, net.training_dataset.num_non_rare_chars + 3)
-            self.assertEqual(_get_shape(net._encoder_input), [None, net._padded_max_input_size, net._embedding_size])
+            self.assertEqual(_get_shape(net._encoder_input),
+                             [None, net._padded_max_input_size, net._embedding_size + net._max_nv_chars])
             # FIXME - it should not be params deciding how many output tokens there are!
             self.assertEqual(_get_shape(net._decoder_logits_out), [None, net._padded_max_output_size, params['n_out']])
+
+    def test_formatting_for_encoder(self):
+        net = TranslationNet(_example_params, mini_dataset = True)
+        
+        unnorm_string = "Hello world\"£"
+        unnorm_ix_expected = np.array([33, 4, 11, 11, 14, 62, 22, 14, 17, 11, 3,
+                                       net.training_dataset.get_index_of_char('\"'), net._input_rare_ix, net._input_stop_ix]
+                                      + [0 for i in range(net._padded_max_input_size - 14)])
+        self.assertTrue((net.convert_unnorm_to_input_ix(unnorm_string) == unnorm_ix_expected).all())
+        unnorm_oh_expected = np.zeros(dtype=np.float32, shape = [net._padded_max_input_size, _example_params['max_nv_chars']])
+        nv_to_ix_dict = {'\"': 2, '£' : 5}
+        unnorm_oh_expected[11, 2] = 1.0; unnorm_oh_expected[12, 5] = 1.0
+        self.assertTrue((net.convert_unnorm_to_input_nv(nv_to_ix_dict, unnorm_string) == unnorm_oh_expected).all())
+
+    def test_formatting_for_decoder(self):
+        net = TranslationNet(_example_params, mini_dataset = True)
+
+        norm_string = "Hello world\"£"
+        norm_hint_expected = np.array([net._input_start_ix, 33, 4, 11, 11, 14, 62, 22, 14, 17, 11, 3,
+                                      net.training_dataset.get_index_of_char('\"'), net._input_rare_ix]
+                                     + [0 for i in range(net._padded_max_output_size - 14)])
+        self.assertTrue((net.convert_norm_to_input(norm_string) == norm_hint_expected).all())
+        norm_output_expected = np.zeros(dtype = np.float32, shape=[net._padded_max_output_size, net._num_output_tokens])
+        norm_output_expected[[i for i in range(14)], [33, 4, 11, 11, 14, 62, 22, 14, 17, 11, 3,
+                                                    net.training_dataset.num_vanilla_chars + 2,
+                                                    net.training_dataset.num_vanilla_chars + 5,
+                                                    net._output_stop_ix]] = 1.0
+        nv_to_ix_dict = {'\"': 2, '£' : 5}
+        self.assertTrue((net.convert_norm_to_output(nv_to_ix_dict, norm_string) == norm_output_expected).all())
 
 # FIXME - add a test to inspect the trainable weights at the end of this!
