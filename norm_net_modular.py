@@ -188,7 +188,7 @@ class Decoder(RecurrentNet):
                                               sequence_length = seq_lengths,
                                               initial_state   = initial_state,
                                               dtype           = tf.float32)
-        output_y_logits = tf.tensordot(self._rnn_output, self._fc_weights, axes = 1) + self._fc_bias
+        output_y_logits = tf.tensordot(self._rnn_output, self._fc_weights, axes = [[2], [0]]) + self._fc_bias
 
         return output_y_logits
 
@@ -206,7 +206,9 @@ class TranslationNet:
 
         self._params = params   # Save for passeing to encoder and decoder
         self._max_input_size  = params['max_input_size']
+        self._padded_max_input_size = self._max_input_size + 1  # Padding with <STOP> token
         self._max_output_size = params['max_output_size']
+        self._padded_max_output_size = self._max_output_size + 1  # Padding with <STOP> token
         self._cell_type = params['cell_type']
         self._embedding_size = params['embedding_size']
 
@@ -225,23 +227,61 @@ class TranslationNet:
         self._num_input_tokens = self._input_start_ix + 1
 
     def build(self):
-        self._unnorm_ix = tf.placeholder(shape = [None, self._num_input_tokens], dtype = tf.int32)
+        self._unnorm_ix = tf.placeholder(shape = [None, self._padded_max_input_size], dtype = tf.int32)
+        self._norm_hint_ix = tf.placeholder(shape = [None, self._padded_max_output_size], dtype = tf.int32)
         if self._embedding_size is not None:
             self._embedding_matrix = tf.Variable(tf.truncated_normal([self._num_input_tokens, self._embedding_size], mean=0.1, stddev=0.02))
             self._encoder_input = tf.nn.embedding_lookup(self._embedding_matrix, self._unnorm_ix)
+            self._decoder_hint_input = tf.nn.embedding_lookup(self._embedding_matrix, self._norm_hint_ix)
         else:
             self._encoder_input = tf.one_hot(indices = self._unnorm_ix, depth = self._num_input_tokens)
+            self._decoder_hint_input = tf.one_hot(indices = self._norm_hint_ix, depth = self._num_input_tokens)
 
         self._unnorm_seq_lengths = tf.placeholder(shape = [None], dtype=tf.int32)
+        self._norm_seq_lengths = tf.placeholder(shape = [None], dtype=tf.int32)
 
         self._encoder = Encoder(self._params)
+        self._decoder = Decoder(self._params)
 
         # 'Wire up' the circuit (self._unnorm_ix, self._unnorm_seq_lengths) --> self._encoder_state_out
         self._encoder_state_out = self._encoder.connect(self._encoder_input, seq_lengths = self._unnorm_seq_lengths)
+        self._decoder_logits_out = self._decoder.connect(self._encoder_state_out, self._decoder_hint_input,
+                                                         seq_lengths = self._norm_seq_lengths)
 
-        # FIXME - need to do the decoder
+        # FIXME - need to do the decoder in 'unhinted' mode
 
         self.built = True
+
+    def convert_unnorm_to_input(self, nv_to_ix, unnorm_string):
+        """Takes a string and converts it to the input format expected by the encoder.
+        This is a one-hot vector, plus an 'at-most-one-hot' vector for encoding
+        non-vanilla characters.
+
+        Args:
+            nv_to_ix: Dictionary mapping non-vanilla characters in the string to one-hot indices.
+            unnorm_string: The string we wish to convert.
+        """
+        raise NotImplementedError
+
+    def convert_norm_to_input(self, norm_string):
+        """Takes a normalised string and converts it to a sequence of one-hot tokens for
+        input to the decoder. The <START> token is placed at the beginning and the whole
+        sequence is 'delayed' by one.
+
+        Args:
+            norm_string: The string we wish to convert.
+        """
+        raise NotImplementedError
+
+    def convert_norm_to_output(self, nv_to_ix, norm_string):
+        """Takes a normalised string and converts it to the one-hot format that we are
+        training the decoder to produce.
+
+        Args:
+            nv_to_ix: Dictionary mapping non-vanilla characters in the string to one-hot indices.
+            norm_string: The string we wish to convert.
+        """
+        raise NotImplementedError
 
 class LikeParameterTests(unittest.TestCase):
 
@@ -416,6 +456,9 @@ class TranslationNetTests(unittest.TestCase):
             self.assertTrue(net.built)
 
             # Should have 3 special tokens: <RARE>, <START>, and <STOP>
-            self.assertEqual(_get_shape(net._unnorm_ix), [None, net.training_dataset.num_non_rare_chars + 3])
+            self.assertEqual(net._num_input_tokens, net.training_dataset.num_non_rare_chars + 3)
+            self.assertEqual(_get_shape(net._encoder_input), [None, net._padded_max_input_size, net._embedding_size])
+            # FIXME - it should not be params deciding how many output tokens there are!
+            self.assertEqual(_get_shape(net._decoder_logits_out), [None, net._padded_max_output_size, params['n_out']])
 
 # FIXME - add a test to inspect the trainable weights at the end of this!
