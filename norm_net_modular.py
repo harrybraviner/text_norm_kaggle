@@ -7,7 +7,6 @@ import argparse, os, unittest
 
 _example_params = {
     'num_layers' : 2,
-    'n_out' : 50,
     'max_input_size'  : 20,
     'max_output_size' : 30,
     'embedding_size'  : 32,
@@ -24,7 +23,8 @@ def _assert_valid_cell_type(x):
 def _assert_like_parameters(x):
     if type(x) != dict:
         raise ValueError('Parameters should be a dict.')
-    required_keys = ['num_layers', 'n_out', 'max_input_size', 'max_nv_chars', 'cell_type', 'max_output_size']
+    required_keys = ['num_layers', 'max_input_size', 'max_output_size', 'embedding_size',
+                     'max_nv_chars', 'cell_type']
     actual_keys = x.keys()
     for k in required_keys:
         if k not in actual_keys:
@@ -94,7 +94,6 @@ class RecurrentNet:
         _assert_like_parameters(params)
         self._cell_type = params['cell_type']
         self._layer_sizes = [params['layer_size_{}'.format(i+1)] for i in range(params['num_layers'])]
-        self._n_out = params['n_out']
 
         self.built = False
 
@@ -150,8 +149,9 @@ class Encoder(RecurrentNet):
 
 class Decoder(RecurrentNet):
 
-    def __init__(self, params):
+    def __init__(self, params, n_out):
         super(Decoder, self).__init__(params)
+        self._n_out = n_out
 
     def build(self):
         with tf.variable_scope('decoder'):
@@ -215,6 +215,7 @@ class TranslationNet:
         self._max_nv_chars = params['max_nv_chars']
 
         self.built = False
+        self.loss_and_optimiser_set_up = False
 
         # Load the training dataset - will need some properties of this for making the embedding matrix
         line_limit = 1000 if mini_dataset else None
@@ -232,33 +233,114 @@ class TranslationNet:
         self._num_output_tokens = self.training_dataset.num_vanilla_chars + self._max_nv_chars + 1
 
     def build(self):
-        self._unnorm_ix = tf.placeholder(shape = [None, self._padded_max_input_size], dtype = tf.int32)
-        self._unnorm_nv = tf.placeholder(shape = [None, self._padded_max_input_size, self._max_nv_chars], dtype = tf.float32)
-        self._norm_hint_ix = tf.placeholder(shape = [None, self._padded_max_output_size], dtype = tf.int32)
-        if self._embedding_size is not None:
-            self._embedding_matrix = tf.Variable(tf.truncated_normal([self._num_input_tokens, self._embedding_size], mean=0.1, stddev=0.02))
-            self._encoder_input = tf.concat([tf.nn.embedding_lookup(self._embedding_matrix, self._unnorm_ix),
-                                             self._unnorm_nv], axis = 2)
-            self._decoder_hint_input = tf.nn.embedding_lookup(self._embedding_matrix, self._norm_hint_ix)
-        else:
-            self._encoder_input = tf.concat([tf.one_hot(indices = self._unnorm_ix, depth = self._num_input_tokens),
-                                             self._unnorm_nv], axis = 2)
-            self._decoder_hint_input = tf.one_hot(indices = self._norm_hint_ix, depth = self._num_input_tokens)
+        if not self.built:
+            self._unnorm_ix = tf.placeholder(shape = [None, self._padded_max_input_size], dtype = tf.int32)
+            self._unnorm_nv = tf.placeholder(shape = [None, self._padded_max_input_size, self._max_nv_chars], dtype = tf.float32)
+            self._norm_hint_ix = tf.placeholder(shape = [None, self._padded_max_output_size], dtype = tf.int32)
+            if self._embedding_size is not None:
+                self._embedding_matrix = tf.Variable(tf.truncated_normal([self._num_input_tokens, self._embedding_size], mean=0.1, stddev=0.02))
+                self._encoder_input = tf.concat([tf.nn.embedding_lookup(self._embedding_matrix, self._unnorm_ix),
+                                                 self._unnorm_nv], axis = 2)
+                self._decoder_hint_input = tf.nn.embedding_lookup(self._embedding_matrix, self._norm_hint_ix)
+            else:
+                self._encoder_input = tf.concat([tf.one_hot(indices = self._unnorm_ix, depth = self._num_input_tokens),
+                                                 self._unnorm_nv], axis = 2)
+                self._decoder_hint_input = tf.one_hot(indices = self._norm_hint_ix, depth = self._num_input_tokens)
 
-        self._unnorm_seq_lengths = tf.placeholder(shape = [None], dtype=tf.int32)
-        self._norm_seq_lengths = tf.placeholder(shape = [None], dtype=tf.int32)
+            self._unnorm_seq_lengths = tf.placeholder(shape = [None], dtype=tf.int32)
+            self._norm_seq_lengths = tf.placeholder(shape = [None], dtype=tf.int32)
 
-        self._encoder = Encoder(self._params)
-        self._decoder = Decoder(self._params)
+            self._encoder = Encoder(self._params)
+            self._decoder = Decoder(self._params, self._num_output_tokens)
 
-        # 'Wire up' the circuit (self._unnorm_ix, self._unnorm_seq_lengths) --> self._encoder_state_out
-        self._encoder_state_out = self._encoder.connect(self._encoder_input, seq_lengths = self._unnorm_seq_lengths)
-        self._decoder_logits_out = self._decoder.connect(self._encoder_state_out, self._decoder_hint_input,
-                                                         seq_lengths = self._norm_seq_lengths)
+            # 'Wire up' the circuit (self._unnorm_ix, self._unnorm_seq_lengths) --> self._encoder_state_out
+            self._encoder_state_out = self._encoder.connect(self._encoder_input, seq_lengths = self._unnorm_seq_lengths)
+            self._decoder_logits_out = self._decoder.connect(self._encoder_state_out, self._decoder_hint_input,
+                                                             seq_lengths = self._norm_seq_lengths)
 
-        # FIXME - need to do the decoder in 'unhinted' mode
+            # FIXME - need to do the decoder in 'unhinted' mode
 
         self.built = True
+
+    def setup_loss_and_optimiser(self):
+        if not self.loss_and_optimiser_set_up:
+            if not self.built:
+                self.build()
+
+            # The tensorflow cross entropy function wants a flattened output
+            self._norm_output = tf.placeholder(dtype = tf.float32, shape=[None, self._padded_max_output_size, self._num_output_tokens])
+            self._norm_output_flattened = tf.reshape(self._norm_output, shape = [-1, self._num_output_tokens])
+            self._decoder_output_logits_flattened = tf.reshape(self._decoder_logits_out, shape = [-1, self._num_output_tokens])
+
+            # Need to mask out the losses from the positions beyond the end of sequences
+            self._output_flat_mask = tf.reduce_sum(self._norm_output_flattened, axis=1)
+            self._weighted_mask = tf.cast(self._norm_seq_lengths, dtype = tf.float32)
+            self._weighted_mask = tf.reciprocal(self._weighted_mask)
+            self._weighted_mask = tf.reshape(self._weighted_mask, [-1, 1])
+            self._weighted_mask = tf.tile(self._weighted_mask, [1, self._padded_max_output_size])
+            self._weighted_mask = tf.reshape(self._weighted_mask, [-1])
+            self._weighted_mask = self._weighted_mask * self._output_flat_mask
+
+            self._cross_entropy_loss =\
+                tf.losses.softmax_cross_entropy(onehot_labels = self._norm_output_flattened,
+                                                logits = self._decoder_output_logits_flattened,
+                                                weights = self._weighted_mask)
+            self._optimize = tf.train.AdamOptimizer().minimize(self._cross_entropy_loss)
+
+            self._sess = tf.Session()
+            self._sess.run(tf.global_variables_initializer())
+
+        self.loss_and_optimiser_set_up = True
+
+    def train_for_single_batch(self, batch_size = 32):
+        if not self.built:
+            self.build()
+        if not self.loss_and_optimiser_set_up:
+            self.setup_loss_and_optimiser()
+
+        input_output_strings = self.training_dataset.next_batch(batch_size)
+        feed_dict = self.convert_string_to_feed_dict(input_output_strings)
+        self._sess.run([self._optimize], feed_dict = feed_dict)
+
+    def convert_string_to_feed_dict(self, input_output_strings):
+        nv_c_to_ix = [self.make_nv_dictionary(s) for (s, _) in input_output_strings]
+
+        unnorm_ix = np.array([self.convert_unnorm_to_input_ix(s) for (s, _) in input_output_strings])
+        #print('unnorm_ix shape: {}'.format(unnorm_ix.shape))
+        unnorm_nv = np.array([self.convert_unnorm_to_input_nv(d, s) for (d, (s, _)) in zip(nv_c_to_ix, input_output_strings)])
+        #print('unnorm_nv shape: {}'.format(unnorm_nv.shape))
+        unnorm_seq_lengths = np.array([len(s)+1 for (s, _) in input_output_strings]) # +1 for <STOP> token
+        #print('unnorm_seq_lengths shape: {}'.format(unnorm_seq_lengths.shape))
+
+        norm_hint_ix = np.array([self.convert_norm_to_input(s) for (_, s) in input_output_strings])
+        #print('norm_hint_ix shape: {}'.format(norm_hint_ix.shape))
+        norm_output = np.array([self.convert_norm_to_output(d, s) for (d, (_, s)) in zip(nv_c_to_ix, input_output_strings)]) 
+        #print('norm_output shape: {}'.format(norm_output.shape))
+        norm_seq_lengths = np.array([len(s)+1 for (_, s) in input_output_strings]) # +1 for <STOP> token
+        #print('norm_seq_lengths shape: {}'.format(norm_seq_lengths.shape))
+
+
+        output = {
+            self._unnorm_ix : unnorm_ix,
+            self._unnorm_nv : unnorm_nv,
+            self._unnorm_seq_lengths : unnorm_seq_lengths,
+            self._norm_hint_ix : norm_hint_ix,
+            self._norm_output : norm_output,
+            self._norm_seq_lengths : norm_seq_lengths
+        }
+        return output
+
+    def make_nv_dictionary(self, unnorm_string):
+        """Forms the set of non-vanilla characters in the input and assigns each of them a
+        unique and random index. Returns a dict from chars to indices.
+
+        Args:
+            unnorm_string: The input from which we want to index characters
+        """
+        nv_chars = set([c for c in unnorm_string if not self.training_dataset.is_vanilla(c)])
+        indices = np.random.choice(self._max_nv_chars, size = len(nv_chars), replace=False)
+        nv_c_to_ix = dict([(c, i) for (c, i) in zip(nv_chars, indices)])
+        return nv_c_to_ix
 
     def convert_unnorm_to_input_ix(self, unnorm_string):
         """Takes a string and converts it to the input format expected by the encoder.
@@ -347,7 +429,7 @@ class LikeParameterTests(unittest.TestCase):
             'num_layers' : 2,
             'max_input_size'  : 20,
             'max_output_size' : 30,
-            'embedding_size'  : 32,
+            # embedding_size is intentionally missing
             'max_nv_chars'    : 10,
             'cell_type'    : 'LSTM',
             'layer_size_1' : 10,
@@ -364,7 +446,6 @@ class LikeParameterTests(unittest.TestCase):
             'embedding_size'  : 32,
             'max_nv_chars'    : 10,
             'cell_type'    : 'LSTM',
-            'n_out' : 50,
             'layer_size_1' : 10,
         }
         with self.assertRaises(ValueError):
@@ -483,14 +564,14 @@ class DecoderTests(unittest.TestCase):
 
         with tf.variable_scope('DecoderTests'):
             params = _example_params
-            net = Decoder(params)
+            net = Decoder(params, n_out=50)
             net.build()
 
     def test_encoder_decoder_wiring(self):
         with tf.variable_scope('DecoderEncoderTests'):
             params = _example_params
             encoder = Encoder(params)
-            decoder = Decoder(params)
+            decoder = Decoder(params, n_out=50)
 
             input_embedded = tf.placeholder(shape=[None, 20, 50], dtype = tf.float32)
             hint_input_embedded = tf.placeholder(shape=[None, 30, 50], dtype = tf.float32)
@@ -511,8 +592,10 @@ class TranslationNetTests(unittest.TestCase):
             self.assertEqual(net._num_input_tokens, net.training_dataset.num_non_rare_chars + 3)
             self.assertEqual(_get_shape(net._encoder_input),
                              [None, net._padded_max_input_size, net._embedding_size + net._max_nv_chars])
-            # FIXME - it should not be params deciding how many output tokens there are!
-            self.assertEqual(_get_shape(net._decoder_logits_out), [None, net._padded_max_output_size, params['n_out']])
+            self.assertEqual(_get_shape(net._decoder_logits_out), [None, net._padded_max_output_size, net._num_output_tokens])
+
+            net.setup_loss_and_optimiser()
+            self.assertEqual(_get_shape(net._weighted_mask), [None])
 
     def test_formatting_for_encoder(self):
         net = TranslationNet(_example_params, mini_dataset = True)
@@ -542,5 +625,25 @@ class TranslationNetTests(unittest.TestCase):
                                                     net._output_stop_ix]] = 1.0
         nv_to_ix_dict = {'\"': 2, '£' : 5}
         self.assertTrue((net.convert_norm_to_output(nv_to_ix_dict, norm_string) == norm_output_expected).all())
+
+    def test_make_nv_dictionary(self):
+        with tf.variable_scope('TranslationNetTests_make_dictionary'):
+            net = TranslationNet(_example_params, mini_dataset = True)
+
+            unnorm_string = "Hello \" world £"
+            for i in range(10): # Non-deterministic, want to check it doesn't work just by luck
+                nv_dict = net.make_nv_dictionary(unnorm_string)
+                # Note - non-deterministic process, so can't just check nv_dict.items() against a given list
+                self.assertEqual(set(nv_dict.keys()), set(['\"', '£']))
+                self.assertTrue(all([v in range(net._max_nv_chars) for v in nv_dict.values()]))
+                self.assertEqual(len([v for v in nv_dict.values()]), 2) # Asserts that the indices are unique
+
+    def test_training(self):
+        with tf.variable_scope('TranslationNetTests_test_training'):
+            net = TranslationNet(_example_params, mini_dataset=True)
+
+            net.train_for_single_batch(32)
+            net.train_for_single_batch(32)
+
 
 # FIXME - add a test to inspect the trainable weights at the end of this!
