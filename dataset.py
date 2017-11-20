@@ -34,6 +34,10 @@ class TrainingDataset:
                 lines = [next(f) for _ in range(line_limit)]
                 self._all_data = [split_line(l)[3:5] for l in lines]
 
+        # The training cases have the annoying property of having e-acute in the output
+        # but not the input
+        self._all_data = [(i, o) for (i, o) in self._all_data if i != "Pate"]
+
         # Filter to input and output sizes
         self._all_data = [(i, o) for (i, o) in self._all_data if     (max_input_size  is None or len(i) <= max_input_size )
                                                                  and (max_output_size is None or len(o) <= max_output_size) ]
