@@ -1,3 +1,8 @@
+# Purpose
+
+The purpose of this is to train a model to convert from 'unnormalized' to 'normalized' English text, as described in the [Text Normalization Challenge](https://www.kaggle.com/c/text-normalization-challenge-english-language).
+I didn't end up getting this finished before the deadline expired, but I'm still working on the model since it's the most involved net I've written.
+
 # Usage
 
 Download the training data for the [Text Normalization Challenge](https://www.kaggle.com/c/text-normalization-challenge-english-language) and place the file `en_train.csv` into the `data` subdirectory.
@@ -57,6 +62,19 @@ Parameters are:
 * `max_nv_chars` - the maximum number of distinct non-vanilla characters we can handle
 
 The input will be the dense embedded encoding of the character (or the embedding of `<RARE>` if the character is not common in the input dataset) concatenated with the one-hot encoding of the non-vanilla index.
+
+![Encoder decoder architecture](./architecture.png "Encoder / decoder architecture")
+
+In the diagram above `x` are the indices of the input character (or `<RARE>` or `<STOP>` tokens), `w` are the one-hot encodings of non-vanilla characters.
+`y` are the indices of the output we are training towards (but delayed by one timestep, otherwise the decoder would just learn to ignore the state and copy the input!)
+The hatted `y`s are the actual output of the net, which we are training to reproduce the `y`s.
+The variables in this diagram correspond to member of `TranslationNet` in `norm_net.py` as follows:
+* `x` is `_unnorm_ix`
+* `w` is `_unnorm_nv`
+* `y` is `_norm_hint_ix`
+* Hatted `y` is `_decoder_logits_out`
+* `E` is `_encoder_state_out`
+* `S` isn't explicitly present are a variable, it's automatically created by the called to `dynamic_rnn` in `Encoder.connect`
 
 # Todo
 
